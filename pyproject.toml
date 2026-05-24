@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vicron"
+version = "0.1.0"
+description = "Versioned crontab manager using Git"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "croniter>=1.0",
+    "openai>=1.0",
+]
+
+[project.scripts]
+vicron = "vicron.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vicron*"]

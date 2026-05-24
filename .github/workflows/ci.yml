@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e . pre-commit
+
+      - name: Lint (ruff via pre-commit)
+        run: pre-commit run --all-files
+
+      - name: Help for every command
+        run: |
+          for cmd in "" edit init add rm show log modules \
+                     status diff sync undo lint doctor export \
+                     git setup-completion; do
+            vicron $cmd --help
+          done
+
+      - name: Init repo (no cron daemon needed)
+        run: vicron init
+
+      - name: Read-only commands after init
+        run: |
+          vicron log
+          vicron show
+          vicron modules
+          vicron status
+          vicron lint
+          vicron git log
+          vicron git show HEAD
+
+      - name: Setup-completion dry-run (all shells)
+        run: |
+          vicron setup-completion --dry-run
+          vicron setup-completion --shell zsh --dry-run
+          vicron setup-completion --shell fish --dry-run
+
+      - name: Undo with only one commit fails gracefully
+        run: |
+          output=$(vicron undo 2>&1 || true)
+          echo "$output" | grep -q "only one commit" || \
+            { echo "Expected 'only one commit' error, got: $output"; exit 1; }
