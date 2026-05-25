@@ -22,9 +22,15 @@ def generate_commit_message(diff: str) -> Optional[str]:
                 {
                     "role": "user",
                     "content": (
-                        "Write a concise git commit message (max 72 chars, no prefix like 'feat:') "
-                        "describing the change to this crontab file. "
-                        "Focus on the scheduled tasks that were added, removed or modified.\n\n"
+                        "Write a concise git commit message (max 72 chars, imperative mood, "
+                        "no conventional-commit prefix) describing ONLY the actual changes "
+                        "to this crontab.\n\n"
+                        "Diff format reminder:\n"
+                        "  lines starting with '+' (not '+++') = ADDED\n"
+                        "  lines starting with '-' (not '---') = REMOVED\n"
+                        "  lines with no prefix = unchanged context — do NOT mention these\n\n"
+                        "Describe only the + and - lines. Be specific about the job or "
+                        "variable that changed.\n\n"
                         f"Diff:\n{diff[:3000]}"
                     ),
                 }
