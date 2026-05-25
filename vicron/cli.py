@@ -16,6 +16,7 @@ from .repo import (
     get_log,
     get_merged_content,
     get_module_path,
+    get_pending_diff,
     get_staged_diff,
     has_parent_commit,
     is_initialised,
@@ -95,18 +96,30 @@ def _check_clean_repo() -> bool:
     click.secho("Warning: the vicron repo has uncommitted changes:", fg="yellow")
     click.echo(dirty)
     click.echo()
-    action = click.prompt(
-        "  [r] reset and discard them   [c] continue (include them)   [a] abort",
-        type=click.Choice(["r", "c", "a"]),
-        default="r",
-        show_choices=False,
-    )
-    if action == "a":
-        return False
-    if action == "r":
-        reset_hard_to_head()
-        click.secho("Reset — repo is clean.", fg="green")
-    return True
+    while True:
+        action = click.prompt(
+            "  [r] reset   [d] show diff   [c] continue   [a] abort",
+            type=click.Choice(["r", "d", "c", "a"]),
+            default="r",
+            show_choices=False,
+        )
+        if action == "d":
+            diff = get_pending_diff()
+            for line in diff.splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    click.secho(line, fg="green")
+                elif line.startswith("-") and not line.startswith("---"):
+                    click.secho(line, fg="red")
+                else:
+                    click.echo(line)
+            click.echo()
+            continue
+        if action == "a":
+            return False
+        if action == "r":
+            reset_hard_to_head()
+            click.secho("Reset — repo is clean.", fg="green")
+        return True
 
 
 def _edit_and_commit(module: str, show_diff: bool = False) -> None:

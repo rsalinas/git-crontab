@@ -100,6 +100,12 @@ def get_dirty_files() -> str:
     return _run(["git", "status", "--short"], capture=True).strip()
 
 
+def get_pending_diff() -> str:
+    """Return unified diff of all uncommitted changes (staged + unstaged)."""
+    _run(["git", "add", "-A"])
+    return _run(["git", "diff", "--staged"], capture=True)
+
+
 def reset_hard_to_head() -> None:
     _run(["git", "reset", "--hard", "HEAD"])
 
