@@ -2,6 +2,17 @@ import os
 from typing import Optional
 
 
+def _extract_changes(diff: str) -> tuple[list[str], list[str]]:
+    """Return (added_lines, removed_lines) from a unified diff, skipping headers and context."""
+    added, removed = [], []
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:].strip())
+        elif line.startswith("-") and not line.startswith("---"):
+            removed.append(line[1:].strip())
+    return added, removed
+
+
 def generate_commit_message(diff: str) -> Optional[str]:
     """
     Call OpenAI gpt-4o-mini to produce a commit message from a crontab diff.
@@ -10,6 +21,21 @@ def generate_commit_message(diff: str) -> Optional[str]:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return None
+
+    added, removed = _extract_changes(diff)
+
+    # Skip AI for pure whitespace changes — the simple fallback is more accurate.
+    if not any(added) and not any(removed):
+        return None
+    if all(line == "" for line in added + removed):
+        return None
+
+    sections = []
+    if added:
+        sections.append("ADDED:\n" + "\n".join(f"  {ln}" for ln in added if ln))
+    if removed:
+        sections.append("REMOVED:\n" + "\n".join(f"  {ln}" for ln in removed if ln))
+    changes_text = "\n".join(sections) or "(only blank lines changed)"
 
     try:
         from openai import OpenAI
@@ -23,20 +49,13 @@ def generate_commit_message(diff: str) -> Optional[str]:
                     "role": "user",
                     "content": (
                         "Write a concise git commit message (max 72 chars, imperative mood, "
-                        "no conventional-commit prefix) describing ONLY the actual changes "
-                        "to this crontab.\n\n"
-                        "Diff format reminder:\n"
-                        "  lines starting with '+' (not '+++') = ADDED\n"
-                        "  lines starting with '-' (not '---') = REMOVED\n"
-                        "  lines with no prefix = unchanged context — do NOT mention these\n\n"
-                        "Describe only the + and - lines. Be specific about the job or "
-                        "variable that changed.\n\n"
-                        f"Diff:\n{diff[:3000]}"
+                        "no conventional-commit prefix) for this crontab change.\n\n"
+                        f"{changes_text[:3000]}"
                     ),
                 }
             ],
             max_tokens=80,
-            temperature=0.3,
+            temperature=0.2,
         )
         msg = response.choices[0].message.content.strip().strip("'\"")
         return msg if msg else None
