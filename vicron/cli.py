@@ -105,6 +105,7 @@ def _edit_and_commit(module: str, show_diff: bool = False) -> None:
         for err in errors:
             click.echo(f"  {err}")
         if not click.confirm("\nInstall anyway?", default=False):
+            _restore(path, content_before)
             return
 
     diff = get_staged_diff()
@@ -121,23 +122,53 @@ def _edit_and_commit(module: str, show_diff: bool = False) -> None:
                 click.secho(line, fg="red")
             else:
                 click.echo(line)
+        from .ai import _extract_changes
+
+        added, removed = _extract_changes(diff)
+        click.echo()
+        click.secho("── AI input ──", dim=True)
+        for ln in added:
+            if ln:
+                click.secho(f"  ADDED:   {ln}", fg="green")
+        for ln in removed:
+            if ln:
+                click.secho(f"  REMOVED: {ln}", fg="red")
+        if not any(added) and not any(removed):
+            click.secho("  (only blank lines — AI will be skipped)", dim=True)
         click.echo()
 
-    click.echo("Generating commit message...", nl=False)
-    msg = generate_commit_message(diff)
-    if msg:
-        click.echo(f" {msg}")
-        if not click.confirm("Use this message?", default=True):
-            msg = click.prompt("Commit message", default=simple_commit_message(diff))
-    else:
-        fallback = simple_commit_message(diff)
+    try:
+        click.echo("Generating commit message...", nl=False)
+        msg = generate_commit_message(diff)
+        if msg:
+            click.echo(f" {msg}")
+            if not click.confirm("Use this message?", default=True):
+                msg = click.prompt(
+                    "Commit message", default=simple_commit_message(diff)
+                )
+        else:
+            fallback = simple_commit_message(diff)
+            click.echo()
+            msg = click.prompt("Commit message", default=fallback)
+    except click.Abort:
         click.echo()
-        msg = click.prompt("Commit message", default=fallback)
+        _restore(path, content_before)
+        click.secho("Aborted — crontab restored to previous state.", fg="yellow")
+        return
 
     commit(msg)
     crontab_install(merged)
     save_state(hash_content(merged))
     click.secho("Crontab updated and installed.", fg="green")
+
+
+def _restore(path, content_before: str) -> None:
+    path.write_text(content_before)
+    subprocess.run(
+        ["git", "reset", "HEAD", "--", str(path)],
+        cwd=REPO_DIR,
+        capture_output=True,
+    )
 
 
 # ---------------------------------------------------------------------------
