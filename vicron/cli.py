@@ -709,6 +709,121 @@ def split(module: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# extract
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("pattern")
+@click.argument("dest_module")
+@click.option(
+    "--from",
+    "source_module",
+    default=DEFAULT_MODULE,
+    shell_complete=_complete_modules,
+    help="Source module (default: main).",
+)
+@click.option("--dry-run", is_flag=True, help="Preview only — make no changes.")
+@click.option("-i", "--ignore-case", is_flag=True, help="Case-insensitive matching.")
+def extract(
+    pattern: str,
+    dest_module: str,
+    source_module: str,
+    dry_run: bool,
+    ignore_case: bool,
+) -> None:
+    """Move all blocks matching PATTERN from a module into DEST_MODULE.
+
+    A block (job + its preceding comments, or a variable line) is moved
+    if any of its lines matches the regexp PATTERN.
+
+    \b
+    Examples:
+      vicron extract gdh gdh
+      vicron extract -i gdh gdh
+      vicron extract 'gdh|GDH' gdh --dry-run
+      vicron extract gdh gdh --from work
+    """
+    if ensure_repo():
+        click.secho("Initialised vicron. Run again.", fg="green")
+        return
+    if not _check_clean_repo():
+        return
+
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        rx = re.compile(pattern, flags)
+    except re.error as exc:
+        raise click.ClickException(f"Invalid regexp: {exc}") from exc
+
+    src_path = get_module_path(source_module)
+    if not src_path.exists():
+        raise click.ClickException(f"Module '{source_module}' not found.")
+
+    blocks = _parse_job_blocks(src_path.read_text())
+
+    def _matches(block: dict) -> bool:
+        return any(rx.search(line) for line in block["lines"])
+
+    keep = [b for b in blocks if not _matches(b)]
+    move = [b for b in blocks if _matches(b)]
+
+    if not move:
+        click.echo(f"No lines match {pattern!r} in module '{source_module}'.")
+        return
+
+    click.echo()
+    click.secho(
+        f"{'Would move' if dry_run else 'Moving'} {len(move)} block(s) "
+        f"from '{source_module}' → '{dest_module}':",
+        bold=True,
+    )
+    click.echo()
+    for block in move:
+        for line in block["lines"]:
+            if block["job"] and line == block["lines"][-1]:
+                click.secho(f"  {line}", fg="green")
+            else:
+                click.secho(f"  {line}", dim=True)
+        click.echo()
+
+    if dry_run:
+        return
+
+    if not click.confirm(
+        f"Move {len(move)} block(s) to '{dest_module}'?", default=True
+    ):
+        return
+
+    # Write back source module (kept blocks only)
+    kept_text = "\n".join(line for b in keep for line in b["lines"]).rstrip("\n") + "\n"
+    src_path.write_text(kept_text)
+
+    # Append to (or create) destination module
+    dest_path = get_module_path(dest_module)
+    if not dest_path.exists():
+        dest_path.write_text(f"# vicron module: {dest_module}\n")
+        click.secho(f"Created module '{dest_module}'.", fg="green")
+    current = dest_path.read_text().rstrip("\n")
+    moved_text = "\n".join(line for b in move for line in b["lines"])
+    dest_path.write_text(current + "\n\n" + moved_text + "\n")
+
+    merged = get_merged_content()
+    errors = validate(merged)
+    if errors:
+        click.secho("Validation errors:", fg="red", bold=True)
+        for err in errors:
+            click.echo(f"  {err}")
+        if not click.confirm("Commit anyway?", default=False):
+            return
+
+    commit(f"extract {source_module}→{dest_module}: /{pattern}/")
+    crontab_install(merged)
+    save_state(hash_content(merged))
+    click.secho("Done.", fg="green")
+
+
+# ---------------------------------------------------------------------------
 # git passthrough
 # ---------------------------------------------------------------------------
 
