@@ -197,7 +197,7 @@ def _edit_and_commit(module: str, show_diff: bool = False) -> None:
         click.secho("Aborted — crontab restored to previous state.", fg="yellow")
         return
 
-    commit(msg)
+    commit(f"[{module}] {msg}")
     crontab_install(merged)
     save_state(hash_content(merged))
     click.secho("Crontab updated and installed.", fg="green")
