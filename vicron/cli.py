@@ -84,7 +84,7 @@ def _get_editor() -> str:
     return os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
 
 
-def _edit_and_commit(module: str) -> None:
+def _edit_and_commit(module: str, show_diff: bool = False) -> None:
     path = get_module_path(module)
     content_before = path.read_text()
 
@@ -111,6 +111,17 @@ def _edit_and_commit(module: str) -> None:
     if not diff.strip():
         click.secho("No changes — crontab unchanged.", fg="yellow")
         return
+
+    if show_diff:
+        click.echo()
+        for line in diff.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                click.secho(line, fg="green")
+            elif line.startswith("-") and not line.startswith("---"):
+                click.secho(line, fg="red")
+            else:
+                click.echo(line)
+        click.echo()
 
     click.echo("Generating commit message...", nl=False)
     msg = generate_commit_message(diff)
@@ -162,7 +173,13 @@ def init_cmd() -> None:
 
 @main.command()
 @click.argument("module", default=DEFAULT_MODULE, shell_complete=_complete_modules)
-def edit(module: str) -> None:
+@click.option(
+    "--diff",
+    "show_diff",
+    is_flag=True,
+    help="Show diff before commit message generation.",
+)
+def edit(module: str, show_diff: bool) -> None:
     """Edit a crontab module (default: main)."""
     if ensure_repo():
         click.secho("Initialised vicron. Run again to start editing.", fg="green")
@@ -178,7 +195,7 @@ def edit(module: str) -> None:
             return
         path.write_text(f"# vicron module: {module}\n")
 
-    _edit_and_commit(module)
+    _edit_and_commit(module, show_diff=show_diff)
 
 
 @main.command()
