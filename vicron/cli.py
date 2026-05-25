@@ -11,6 +11,7 @@ from .crontab import get_installed, hash_content, install as crontab_install, va
 from .repo import (
     commit,
     ensure_repo,
+    get_dirty_files,
     get_last_commit_summary,
     get_log,
     get_merged_content,
@@ -19,6 +20,7 @@ from .repo import (
     has_parent_commit,
     is_initialised,
     list_modules,
+    reset_hard_to_head,
     reset_hard_to_parent,
     save_state,
 )
@@ -84,7 +86,33 @@ def _get_editor() -> str:
     return os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
 
 
+def _check_clean_repo() -> bool:
+    """Warn if the repo has leftover uncommitted changes. Returns False to abort."""
+    dirty = get_dirty_files()
+    if not dirty:
+        return True
+    click.echo()
+    click.secho("Warning: the vicron repo has uncommitted changes:", fg="yellow")
+    click.echo(dirty)
+    click.echo()
+    action = click.prompt(
+        "  [r] reset and discard them   [c] continue (include them)   [a] abort",
+        type=click.Choice(["r", "c", "a"]),
+        default="r",
+        show_choices=False,
+    )
+    if action == "a":
+        return False
+    if action == "r":
+        reset_hard_to_head()
+        click.secho("Reset — repo is clean.", fg="green")
+    return True
+
+
 def _edit_and_commit(module: str, show_diff: bool = False) -> None:
+    if not _check_clean_repo():
+        return
+
     path = get_module_path(module)
     content_before = path.read_text()
 
@@ -231,16 +259,28 @@ def edit(module: str, show_diff: bool) -> None:
 
 @main.command()
 def status() -> None:
-    """Show drift status, modules and uncommitted changes."""
+    """Check coherence: drift, uncommitted changes, and repo/crontab sync."""
     ensure_repo()
+
+    dirty = get_dirty_files()
     has_drift, _ = check_drift()
+    all_ok = not has_drift and not dirty
 
     if has_drift:
         click.secho(
-            "WARNING  installed crontab was modified outside vicron", fg="yellow"
+            "DRIFT    installed crontab was modified outside vicron", fg="yellow"
         )
     else:
         click.secho("OK       installed crontab matches repo", fg="green")
+
+    if dirty:
+        click.secho(
+            "DIRTY    repo has uncommitted changes (leftover from a previous edit?)",
+            fg="yellow",
+        )
+        click.echo(dirty)
+    else:
+        click.secho("OK       repo working tree is clean", fg="green")
 
     modules = list_modules()
     if modules:
@@ -257,16 +297,9 @@ def status() -> None:
                 f"  {name}.cron  ({len(active)} active line{'s' if len(active) != 1 else ''})"
             )
 
-    result = subprocess.run(
-        ["git", "status", "--short"],
-        cwd=REPO_DIR,
-        capture_output=True,
-        text=True,
-    )
-    if result.stdout.strip():
+    if all_ok:
         click.echo()
-        click.echo("Uncommitted changes:")
-        click.echo(result.stdout.rstrip())
+        click.secho("Everything is in sync.", fg="green")
 
 
 @main.command(name="diff")

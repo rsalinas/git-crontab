@@ -95,6 +95,15 @@ def get_merged_content() -> str:
 # ---------------------------------------------------------------------------
 
 
+def get_dirty_files() -> str:
+    """Return `git status --short` output, empty string if repo is clean."""
+    return _run(["git", "status", "--short"], capture=True).strip()
+
+
+def reset_hard_to_head() -> None:
+    _run(["git", "reset", "--hard", "HEAD"])
+
+
 def stage_all() -> None:
     _run(["git", "add", "-A"])
 
