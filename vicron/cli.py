@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import sys
 import difflib
 from pathlib import Path
 
@@ -87,11 +88,48 @@ def _get_editor() -> str:
     return os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
 
 
+# ---------------------------------------------------------------------------
+# Non-interactive mode
+#
+# Every prompt below is a place where an unattended run (a script, a cron job,
+# an AI agent) would hang forever, or -- worse -- silently take the default and
+# do something nobody asked for. So: without a TTY we never guess. Either the
+# caller passed --yes and we proceed, or we fail loudly and say what was needed.
+# ---------------------------------------------------------------------------
+
+_ASSUME_YES = False
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty() and not _ASSUME_YES
+
+
+def _confirm(text: str, default: bool = False) -> bool:
+    """click.confirm, but never silently guesses when there is nobody to ask."""
+    if _interactive():
+        return click.confirm(text, default=default)
+    if _ASSUME_YES:
+        click.secho(f"[--yes] {text} -> yes", dim=True)
+        return True
+    raise click.ClickException(
+        f"needs confirmation: {text}\n"
+        "  No TTY to ask on. Re-run with --yes to answer yes to everything."
+    )
+
+
 def _check_clean_repo() -> bool:
     """Warn if the repo has leftover uncommitted changes. Returns False to abort."""
     dirty = get_dirty_files()
     if not dirty:
         return True
+    if not _interactive():
+        # Resetting someone's uncommitted work because nobody was around to say
+        # no is not a decision this tool gets to make on its own.
+        raise click.ClickException(
+            f"the vicron repo has uncommitted changes:\n{dirty}\n"
+            "  Commit them (vicron git commit) or discard them (vicron git checkout .)"
+            " before running unattended."
+        )
     click.echo()
     click.secho("Warning: the vicron repo has uncommitted changes:", fg="yellow")
     click.echo(dirty)
@@ -222,11 +260,86 @@ def _restore(path, content_before: str) -> None:
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+@click.option(
+    "-y",
+    "--yes",
+    is_flag=True,
+    help="Answer yes to every prompt (required for unattended runs).",
+)
 @click.pass_context
-def main(ctx: click.Context) -> None:
+def main(ctx: click.Context, yes: bool) -> None:
     """vicron — versioned crontab manager."""
+    global _ASSUME_YES
+    _ASSUME_YES = yes
     if ctx.invoked_subcommand is None:
         ctx.invoke(edit)
+
+
+def _active_lines(content: str) -> int:
+    return sum(
+        1
+        for ln in content.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    )
+
+
+def _apply(module: str, new_content: str, message: str | None) -> None:
+    """Install `new_content` as the module and commit it. No editor, no prompts.
+
+    This is the scriptable path into vicron. Without it the only way to change a
+    crontab is to spawn $EDITOR, so any automation ends up writing the module
+    file behind vicron's back -- skipping validation, and leaving the repo dirty
+    because it never reaches the commit step.
+    """
+    path = get_module_path(module)
+    content_before = path.read_text() if path.exists() else ""
+    if new_content == content_before:
+        click.secho("No changes — crontab unchanged.", fg="yellow")
+        return
+
+    # Guards. Both of these are here because the first test run of --stdin was
+    # `vicron edit --stdin < /dev/null` by accident: stdin was empty, the empty
+    # module was written, committed, and a 78-line crontab was installed as
+    # EMPTY. A tool that manages crontabs must never do that quietly.
+    if not new_content.strip():
+        raise click.ClickException(
+            "refusing to install an empty crontab.\n"
+            "  stdin was empty — closed, redirected from /dev/null, or a broken pipe.\n"
+            "  To really empty a module, write a comment-only file."
+        )
+
+    before_n = _active_lines(content_before)
+    after_n = _active_lines(new_content)
+    if before_n and after_n < before_n / 2 and not _ASSUME_YES:
+        raise click.ClickException(
+            f"refusing: this drops {before_n - after_n} of {before_n} active jobs "
+            f"in '{module}' (leaving {after_n}).\n"
+            "  That is usually a mangled pipeline, not an intent. "
+            "Pass --yes if you really mean it."
+        )
+
+    path.write_text(new_content)
+
+    merged = get_merged_content()
+    errors = validate(merged)
+    if errors:
+        click.secho("Validation errors:", fg="red", bold=True)
+        for err in errors:
+            click.echo(f"  {err}")
+        if not _confirm("Install anyway?", default=False):
+            _restore(path, content_before)
+            raise click.ClickException("aborted — module restored, crontab untouched.")
+
+    diff = get_staged_diff()
+    if not diff.strip():
+        click.secho("No changes — crontab unchanged.", fg="yellow")
+        return
+
+    msg = message or simple_commit_message(diff)
+    commit(f"[{module}] {msg}")
+    crontab_install(merged)
+    save_state(hash_content(merged))
+    click.secho(f"Crontab updated, committed and installed: {msg}", fg="green")
 
 
 @main.command(name="init")
@@ -251,8 +364,21 @@ def init_cmd() -> None:
     is_flag=True,
     help="Show diff before commit message generation.",
 )
-def edit(module: str, show_diff: bool) -> None:
-    """Edit a crontab module (default: main)."""
+@click.option(
+    "--stdin",
+    "from_stdin",
+    is_flag=True,
+    help="Read the new module content from stdin instead of opening $EDITOR. "
+    "Validates, installs and commits without prompting. Pair with -m.",
+)
+@click.option("-m", "--message", default=None, help="Commit message (implies no AI).")
+def edit(module: str, show_diff: bool, from_stdin: bool, message: str | None) -> None:
+    """Edit a crontab module (default: main).
+
+    Scriptable round-trip:
+
+        vicron get | sed 's|old|new|' | vicron edit --stdin -m "fix path"
+    """
     if ensure_repo():
         click.secho("Initialised vicron. Run again to start editing.", fg="green")
         return
@@ -263,11 +389,28 @@ def edit(module: str, show_diff: bool) -> None:
 
     path = get_module_path(module)
     if not path.exists():
-        if not click.confirm(f"Module '{module}' does not exist. Create it?"):
+        if not _confirm(f"Module '{module}' does not exist. Create it?"):
             return
         path.write_text(f"# vicron module: {module}\n")
 
+    if from_stdin:
+        if not _check_clean_repo():
+            return
+        _apply(module, sys.stdin.read(), message)
+        return
+
     _edit_and_commit(module, show_diff=show_diff)
+
+
+@main.command(name="get")
+@click.argument("module", default=DEFAULT_MODULE, shell_complete=_complete_modules)
+def get_cmd(module: str) -> None:
+    """Print a module's raw content to stdout (the read half of `edit --stdin`)."""
+    ensure_repo()
+    path = get_module_path(module)
+    if not path.exists():
+        raise click.ClickException(f"Module '{module}' not found.")
+    click.echo(path.read_text(), nl=False)
 
 
 @main.command()
@@ -314,10 +457,17 @@ def status() -> None:
         click.echo()
         click.secho("Everything is in sync.", fg="green")
 
+    # Exit code, not just colour: `vicron status && deploy` has to mean something.
+    if not all_ok:
+        sys.exit(1)
+
 
 @main.command(name="diff")
 def diff_cmd() -> None:
-    """Show diff between repo version and installed crontab."""
+    """Show diff between repo version and installed crontab.
+
+    Exits 1 if they differ, so it can gate a script (like `git diff --exit-code`).
+    """
     ensure_repo()
     merged = get_merged_content()
     installed = get_installed()
@@ -340,6 +490,7 @@ def diff_cmd() -> None:
             click.secho(line, fg="red")
         else:
             click.echo(line)
+    sys.exit(1)
 
 
 @main.command()
@@ -410,7 +561,14 @@ def rm_cmd(module: str) -> None:
 
 
 @main.command()
-def sync() -> None:
+@click.option(
+    "-m",
+    "--message",
+    default=None,
+    help="Also commit any pending module changes with this message. "
+    "Without it, `sync` installs but leaves the repo dirty — a half-done state.",
+)
+def sync(message: str | None) -> None:
     """Install the merged repo crontab without editing."""
     if ensure_repo():
         click.secho("Initialised vicron. Run again to sync.", fg="green")
@@ -425,11 +583,19 @@ def sync() -> None:
         click.secho("Validation errors:", fg="red", bold=True)
         for err in errors:
             click.echo(f"  {err}")
-        if not click.confirm("Install anyway?", default=False):
+        if not _confirm("Install anyway?", default=False):
             return
+    if message and get_dirty_files():
+        commit(message)
+        click.secho(f"Committed: {message}", fg="green")
     crontab_install(merged)
     save_state(hash_content(merged))
     click.secho("Crontab installed from repo.", fg="green")
+    if not message and get_dirty_files():
+        click.secho(
+            "Note: repo still has uncommitted changes. Use -m to commit them too.",
+            fg="yellow",
+        )
 
 
 @main.command()
@@ -889,8 +1055,8 @@ def doctor() -> None:
         click.secho(
             f"Found {errors} error(s). Crontab may not work correctly.", fg="red"
         )
-    else:
-        click.secho("All checks passed.", fg="green")
+        sys.exit(1)
+    click.secho("All checks passed.", fg="green")
 
 
 # ---------------------------------------------------------------------------
