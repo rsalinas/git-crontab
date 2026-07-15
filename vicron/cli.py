@@ -356,6 +356,50 @@ def init_cmd() -> None:
     click.echo(get_log(5).rstrip())
 
 
+def _pick_module_interactively() -> str | None:
+    """Show a numbered list of modules and return the chosen name (or None)."""
+    names = list_modules()
+    if not names:
+        click.secho("No modules found.", fg="yellow")
+        return None
+
+    click.echo()
+    click.secho("Modules:", bold=True)
+    width = len(str(len(names)))
+    for i, name in enumerate(names, 1):
+        p = get_module_path(name)
+        active = [
+            ln
+            for ln in p.read_text().splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        marker = " (default)" if name == DEFAULT_MODULE else ""
+        click.secho(f"  {i:>{width}}) ", fg="cyan", nl=False)
+        click.echo(
+            f"{name}{marker}  — {len(active)} active line{'s' if len(active) != 1 else ''}"
+        )
+    click.echo()
+
+    choice = click.prompt(
+        "Pick a module (number or name)", default="", show_default=False
+    ).strip()
+    if not choice:
+        return None
+
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(names):
+            return names[idx - 1]
+        click.secho(f"Out of range: {idx}", fg="red")
+        return None
+
+    if choice in names:
+        return choice
+
+    click.secho(f"Unknown module: {choice}", fg="red")
+    return None
+
+
 @main.command()
 @click.argument("module", default=DEFAULT_MODULE, shell_complete=_complete_modules)
 @click.option(
@@ -372,7 +416,20 @@ def init_cmd() -> None:
     "Validates, installs and commits without prompting. Pair with -m.",
 )
 @click.option("-m", "--message", default=None, help="Commit message (implies no AI).")
-def edit(module: str, show_diff: bool, from_stdin: bool, message: str | None) -> None:
+@click.option(
+    "-p",
+    "--pick-module",
+    "pick_module",
+    is_flag=True,
+    help="List modules and pick one interactively before editing.",
+)
+def edit(
+    module: str,
+    show_diff: bool,
+    from_stdin: bool,
+    message: str | None,
+    pick_module: bool,
+) -> None:
     """Edit a crontab module (default: main).
 
     Scriptable round-trip:
@@ -386,6 +443,12 @@ def edit(module: str, show_diff: bool, from_stdin: bool, message: str | None) ->
     if has_drift:
         if not handle_drift(installed_content):
             return
+
+    if pick_module:
+        picked = _pick_module_interactively()
+        if picked is None:
+            return
+        module = picked
 
     path = get_module_path(module)
     if not path.exists():
