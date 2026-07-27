@@ -7,10 +7,11 @@ from .repo import (
     commit,
     get_merged_content,
     get_module_path,
+    list_modules,
     load_state,
     save_state,
+    split_merged,
 )
-from .config import DEFAULT_MODULE
 
 
 def check_drift() -> tuple[bool, str]:
@@ -76,15 +77,28 @@ def handle_drift(installed_content: str) -> bool:
 
 
 def _import_installed(installed_content: str) -> None:
-    """Write installed crontab into main.cron and commit."""
-    path = get_module_path(DEFAULT_MODULE)
-    path.write_text(installed_content)
+    """Split the installed crontab back into its module files and commit."""
+    modules = split_merged(installed_content)
+    for name in list_modules():
+        if name not in modules:
+            get_module_path(name).unlink()
+            click.echo(f"Module '{name}' is gone from the installed crontab: removed.")
+    for name, content in modules.items():
+        get_module_path(name).write_text(content)
+
     committed = commit("drift: import manually-edited crontab")
     save_state(hash_content(installed_content))
     if committed:
         click.echo("Installed changes imported into repo and committed.")
     else:
         click.echo("Installed changes written to repo (no git changes detected).")
+
+    if get_merged_content() != installed_content:
+        click.secho(
+            "Warning: re-merging the repo does not reproduce the installed crontab "
+            "(module sections reordered?). Run 'vicron sync' to normalise.",
+            fg="yellow",
+        )
 
 
 def _print_diff(lines: list[str], max_lines: int = 60) -> None:

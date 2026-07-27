@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -79,15 +80,34 @@ def list_modules() -> list[str]:
     return names
 
 
+def module_separator(name: str) -> str:
+    return f"\n# --- vicron module: {name} ---\n"
+
+
+_SEPARATOR_RE = re.compile(r"\n# --- vicron module: (\S+) ---\n")
+
+
 def get_merged_content() -> str:
     """Concatenate all modules in order; add separator comments between them."""
     parts: list[str] = []
     for name in list_modules():
         content = get_module_path(name).read_text()
         if parts:
-            parts.append(f"\n# --- vicron module: {name} ---\n")
+            parts.append(module_separator(name))
         parts.append(content)
     return "".join(parts)
+
+
+def split_merged(content: str) -> dict[str, str]:
+    """Inverse of get_merged_content(): map module name -> its own content.
+
+    Text before the first separator belongs to the default module.
+    """
+    parts = _SEPARATOR_RE.split(content)
+    modules = {DEFAULT_MODULE: parts[0]}
+    for name, body in zip(parts[1::2], parts[2::2]):
+        modules[name] = body
+    return modules
 
 
 # ---------------------------------------------------------------------------
